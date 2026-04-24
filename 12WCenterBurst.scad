@@ -36,8 +36,8 @@
 // ============================================================
 
 /* [Display Settings] */
-// Display mode: 1=Print bed layout, 2=Linear visualization
-display_mode = 2;  // [1:Print bed layout, 2:Linear visualization]
+// Display mode: 1=Print bed layout, 2=Linear visualization, 3=SVG profile export
+display_mode = 2;  // [1:Print bed layout, 2:Linear visualization, 3:SVG profile]
 
 // Which color to display/export
 // 1 = Color A (Normal, 8"+4"), 2 = Color B (Mirror, 4"+8")
@@ -366,6 +366,37 @@ module segment(length, pos_offset, is_mirror) {
 }
 
 // ============================================================
+// 2D SIDE PROFILE — for SVG export (display_mode = 3)
+//
+// Renders a flat 2D silhouette of the strip as seen from the side:
+//   - Base rectangle: total_length wide × width tall
+//   - One square per finger position, height = get_finger_length()
+//
+// Color A (is_mirror=false): arch — tall fingers at zone centers
+// Color B (is_mirror=true):  valley — short fingers at zone centers
+//
+// Export: set display_mode=3, then File → Export → Export as SVG
+// Both profiles are placed side by side with a small gap between them.
+// ============================================================
+
+// Profile gap between Color A and Color B in SVG layout
+profile_gap = 0.25;
+
+module strip_profile_2d(is_mirror) {
+    finger_offset = is_mirror ? finger_spacing / 2 : 0;
+    union() {
+        // Base body — full length × strip width
+        square([total_length, width]);
+        // Fingers — one square per position, height from center-burst function
+        for (fx = [finger_offset : finger_spacing : total_length - finger_width]) {
+            flen = get_finger_length(fx, is_mirror);
+            translate([fx, width])
+                square([finger_width, flen]);
+        }
+    }
+}
+
+// ============================================================
 // MAIN ASSEMBLY
 // ============================================================
 
@@ -379,6 +410,27 @@ if (abs(total_configured - total_length) > 0.01) {
     echo("════════════════════════════════════════");
 
 } else {
+
+    // ---- SVG PROFILE EXPORT (display_mode = 3) ------------------
+    // Renders both Color A and Color B as 2D side profiles, side by side.
+    // Set display_mode=3, then File → Export → Export as SVG.
+    // color_mode is ignored in this mode — both profiles always shown.
+    if (display_mode == 3) {
+        // Color A — arch profile (top row)
+        color("Peru")
+            strip_profile_2d(false);
+        // Color B — valley profile (below, offset by strip width + gap)
+        translate([0, -(width + finger_length_max + profile_gap), 0])
+            color("SteelBlue")
+                strip_profile_2d(true);
+
+        echo("════════════════════════════════════════");
+        echo("CENTER BURST 12×15 — SVG PROFILE EXPORT");
+        echo("Top profile:    Color A (Arch)");
+        echo("Bottom profile: Color B (Valley)");
+        echo("Export: File → Export → Export as SVG");
+        echo("════════════════════════════════════════");
+    }
 
     // ---- COLOR A — ARCH (tall at zone center, short at edges) ---
     if (color_mode == 1) {
