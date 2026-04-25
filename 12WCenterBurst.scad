@@ -36,8 +36,8 @@
 // ============================================================
 
 /* [Display Settings] */
-// Display mode: 1=Print bed layout, 2=Linear visualization, 3=SVG profile export
-display_mode = 2;  // [1:Print bed layout, 2:Linear visualization, 3:SVG profile]
+// Display mode: 1=Print bed layout, 2=Linear visualization, 3=SVG profile export, 4=Laser cut SVG
+display_mode = 2;  // [1:Print bed layout, 2:Linear visualization, 3:SVG profile, 4:Laser cut SVG]
 
 // Which color to display/export
 // 1 = Color A (Normal, 8"+4"), 2 = Color B (Mirror, 4"+8")
@@ -50,7 +50,8 @@ color_mode = 1;  // [1:Color A Normal, 2:Color B Mirror]
 //   3 = No innies, all outies (suppress innies entirely — not typically used)
 //   4 = No outies, BLIND pocket innies  (Color B BOTTOM endcap — flat bottom face,
 //       pocket accepts peg from strip above, stays closed on exterior)
-show_joints = 1;  // [1:All joints, 2:Color A endcap top, 3:No innies, 4:Color B endcap bottom]
+//   5 = Completely blank  (no outies, no innies — fingers only, clean base strip)
+show_joints = 1;  // [1:All joints, 2:Color A endcap top, 3:No innies, 4:Color B endcap bottom, 5:Blank no joints]
 
 /* [Physical Dimensions] */
 // Strip thickness (inches)
@@ -132,6 +133,22 @@ y_spacing = 1.25 + (2 / 25.4);
 
 // X spacing between pieces on print bed (inches)
 x_spacing = 0.4;
+
+/* [Laser Export] */
+// Dowel hole diameter (inches) — drill / laser cut
+dowel_diameter = 0.195;  // [0.1:0.005:0.5]
+
+// Connector pocket — outer slot width (inches) — wider, at bottom edge
+pocket_outer_width = 2.0;  // [0.5:0.25:4.0]
+
+// Connector pocket — inner slot width (inches) — narrower, deeper
+pocket_inner_width = 1.5;  // [0.5:0.25:4.0]
+
+// Connector pocket — depth of each layer (inches) — two layers = 0.25" total
+pocket_layer_depth = 0.125;  // [0.0625:0.0625:0.5]
+
+// Gap between Color A and Color B profiles in laser SVG layout
+laser_profile_gap = 0.5;
 
 // ============================================================
 // COMPUTED VALUES — do not edit below this line
@@ -340,6 +357,7 @@ module segment(length, pos_offset, is_mirror) {
         // Mode 2:  NO innies (Color A top endcap — flat top, nothing above)
         // Mode 3:  no innies at all
         // Mode 4:  blind pocket (Color B bottom endcap)
+        // Mode 5:  NO innies (blank strip — fingers only, no joints)
         if (show_joints == 1) {
             for (i = [0 : len(innie_positions) - 1]) {
                 ip = innie_positions[i];
@@ -397,6 +415,75 @@ module strip_profile_2d(is_mirror) {
 }
 
 // ============================================================
+// LASER PROFILE — for laser-cut SVG export (display_mode = 4)
+//
+// Full-length 12" strip — no piece splits, single cut file.
+// Features:
+//   - Gradient teeth along top edge (same cosine-ease as 3D version)
+//   - 6 dowel holes (3 pairs) at fixed positions, centered in strip width:
+//       Left pair:   x = 0.75" and 1.25"
+//       Center pair: x = 5.75" and 6.25"
+//       Right pair:  x = 10.75" and 11.25"
+//   - 2 stepped connector pockets cut from the bottom edge:
+//       Centers at x = 3.5" and x = 8.5"
+//       Outer slot: pocket_outer_width × pocket_layer_depth  (from edge)
+//       Inner slot: pocket_inner_width × pocket_layer_depth  (deeper)
+//       Total pocket depth: 0.25" (= 2 × pocket_layer_depth)
+//
+// SCALE FIX: output wrapped in scale([25.4, 25.4, 1])
+//   → converts inches → mm → SVG reads at true physical size
+//     in Inkscape, Illustrator, and laser cutter software.
+//
+// Export: File → Export → Export as SVG
+// ============================================================
+
+// Dowel hole X positions — center of each hole along the strip
+laser_dowel_x = [0.75, 1.25, 5.75, 6.25, 10.75, 11.25];
+
+// Connector pocket center X positions along the strip
+laser_pocket_x = [3.5, 8.5];
+
+// Stepped pocket subtracted from the bottom edge of the strip
+module laser_connector_pocket(cx) {
+    union() {
+        // Outer slot — wider, at the very bottom edge (y = 0)
+        translate([cx - pocket_outer_width / 2, 0])
+            square([pocket_outer_width, pocket_layer_depth]);
+        // Inner slot — narrower, steps deeper into the strip
+        translate([cx - pocket_inner_width / 2, pocket_layer_depth])
+            square([pocket_inner_width, pocket_layer_depth]);
+    }
+}
+
+// Full laser-cut strip profile as a 2D shape
+module laser_profile_2d(is_mirror) {
+    finger_offset = is_mirror ? finger_spacing / 2 : 0;
+    difference() {
+        union() {
+            // Base body — full length × strip width
+            square([total_length, width]);
+            // Gradient teeth along top edge
+            for (fx = [finger_offset : finger_spacing : total_length - finger_width]) {
+                flen = get_finger_length(fx, is_mirror);
+                translate([fx, width])
+                    square([finger_width, flen]);
+            }
+        }
+
+        // Dowel holes — centered vertically in the strip width
+        for (dx = laser_dowel_x) {
+            translate([dx, width / 2])
+                circle(d = dowel_diameter, $fn = 64);
+        }
+
+        // Stepped connector pockets — from bottom edge
+        for (px = laser_pocket_x) {
+            laser_connector_pocket(px);
+        }
+    }
+}
+
+// ============================================================
 // MAIN ASSEMBLY
 // ============================================================
 
@@ -411,23 +498,58 @@ if (abs(total_configured - total_length) > 0.01) {
 
 } else {
 
+    // ---- LASER CUT EXPORT (display_mode = 4) --------------------
+    // Full-length strip with dowel holes + stepped connector pockets.
+    // Wrapped in scale([25.4, 25.4, 1]) → SVG exports at true mm size.
+    // color_mode is ignored — both profiles always shown.
+    if (display_mode == 4) {
+        scale([25.4, 25.4, 1]) {
+            // Color A — arch profile (top)
+            color("Peru")
+                laser_profile_2d(false);
+            // Color B — valley profile (below, with gap)
+            translate([0, -(width + finger_length_max + laser_profile_gap), 0])
+                color("SteelBlue")
+                    laser_profile_2d(true);
+        }
+
+        echo("════════════════════════════════════════");
+        echo("CENTER BURST 12×15 — LASER CUT EXPORT");
+        echo("Scale: ×25.4  (SVG exports in true mm)");
+        echo("Top:    Color A — Arch profile");
+        echo("Bottom: Color B — Valley profile");
+        echo("Dowel holes: ⌀0.195\"  ×6  (3 pairs)");
+        echo("  Left   x=0.75\" / 1.25\"");
+        echo("  Center x=5.75\" / 6.25\"");
+        echo("  Right  x=10.75\" / 11.25\"");
+        echo("Connector pockets: ×2  at x=3.5\" and x=8.5\"");
+        echo("  Outer slot: 2.0\" wide × 0.125\" deep");
+        echo("  Inner slot: 1.5\" wide × 0.125\" deep");
+        echo("Export: File → Export → Export as SVG");
+        echo("════════════════════════════════════════");
+    }
+
     // ---- SVG PROFILE EXPORT (display_mode = 3) ------------------
     // Renders both Color A and Color B as 2D side profiles, side by side.
-    // Set display_mode=3, then File → Export → Export as SVG.
+    // Use as endcap overlays to cover dowel hole edges on wooden assembly.
+    // Scale ×25.4 → SVG exports at true physical mm size.
     // color_mode is ignored in this mode — both profiles always shown.
     if (display_mode == 3) {
-        // Color A — arch profile (top row)
-        color("Peru")
-            strip_profile_2d(false);
-        // Color B — valley profile (below, offset by strip width + gap)
-        translate([0, -(width + finger_length_max + profile_gap), 0])
-            color("SteelBlue")
-                strip_profile_2d(true);
+        scale([25.4, 25.4, 1]) {
+            // Color A — arch profile (top row)
+            color("Peru")
+                strip_profile_2d(false);
+            // Color B — valley profile (below, offset by strip width + gap)
+            translate([0, -(width + finger_length_max + profile_gap), 0])
+                color("SteelBlue")
+                    strip_profile_2d(true);
+        }
 
         echo("════════════════════════════════════════");
         echo("CENTER BURST 12×15 — SVG PROFILE EXPORT");
-        echo("Top profile:    Color A (Arch)");
-        echo("Bottom profile: Color B (Valley)");
+        echo("Scale: ×25.4  (SVG exports in true mm)");
+        echo("Top profile:    Color A (Arch) — endcap");
+        echo("Bottom profile: Color B (Valley) — endcap");
         echo("Export: File → Export → Export as SVG");
         echo("════════════════════════════════════════");
     }
